@@ -1,0 +1,174 @@
+// --- シミュレーション設定 ---
+let robots = [];
+let numRobots = 20;
+let obstacles = [];
+
+function setup() {
+  createCanvas(400, 400);
+  for (let i = 0; i < numRobots; i++) {
+    robots.push(new Toio(random(width), random(height)));
+  }
+  // ランダムに障害物配置
+  for (let i = 0; i < 5; i++) {
+    obstacles.push(createVector(random(50, 350), random(50, 350)));
+  }
+}
+
+function draw() {
+  background(240);
+
+  // ポテンシャル場（人間位置）
+  let human = createVector(mouseX, mouseY);
+  fill(255, 100, 100, 100);
+  noStroke();
+  ellipse(human.x, human.y, 50, 50);
+
+  // 障害物描画
+  fill(80);
+  for (let obs of obstacles) {
+    ellipse(obs.x, obs.y, 30, 30);
+  }
+
+  // ロボット更新
+  for (let r of robots) {
+    r.applyPotential(human, obstacles, robots);
+    r.update();
+    r.display();
+  }
+}
+
+// --- Toio クラス ---
+class Toio {
+  constructor(x, y) {
+    this.pos = createVector(x, y);
+    this.vel = p5.Vector.random2D().mult(2);
+    this.acc = createVector();
+    this.maxSpeed = 2;
+    this.maxForce = 0.1;
+    this.size = 30;
+  }
+
+  applyPotential(human, obstacles, robots) {
+    let force = createVector();
+
+    // 人間から離れる力（ポテンシャル場：反発）
+    let humanVec = p5.Vector.sub(this.pos, human);
+    let distH = humanVec.mag();
+    if (distH < 100) {
+      humanVec.setMag(map(distH, 0, 100, 1, 0));
+      force.add(humanVec);
+    }
+
+    // 障害物回避
+    for (let obs of obstacles) {
+      let diff = p5.Vector.sub(this.pos, obs);
+      let d = diff.mag();
+      if (d < 50) {
+        diff.setMag(map(d, 0, 50, 1, 0));
+        force.add(diff);
+      }
+    }
+
+    // 群行動（分離・整列・結合）
+    let sep = this.separate(robots).mult(1.5);
+    let ali = this.align(robots).mult(1.0);
+    let coh = this.cohesion(robots).mult(0.8);
+    force.add(sep);
+    force.add(ali);
+    force.add(coh);
+
+    // 最終加速度
+    this.acc.add(force.limit(this.maxForce));
+  }
+
+  update() {
+    this.vel.add(this.acc);
+    this.vel.limit(this.maxSpeed);
+    this.pos.add(this.vel);
+    this.acc.mult(0);
+
+    // 壁バウンス
+    if (this.pos.x < 0 || this.pos.x > width) this.vel.x *= -1;
+    if (this.pos.y < 0 || this.pos.y > height) this.vel.y *= -1;
+  }
+
+  display() {
+    push();
+    translate(this.pos.x, this.pos.y);
+    rotate(this.vel.heading());
+    fill(100, 150, 255);
+    rectMode(CENTER);
+    rect(0, 0, this.size, this.size, 5);
+    pop();
+  }
+
+  separate(robots) {
+    let desiredSeparation = this.size * 1.5;
+    let steer = createVector();
+    let count = 0;
+    for (let other of robots) {
+      let d = p5.Vector.dist(this.pos, other.pos);
+      if (d > 0 && d < desiredSeparation) {
+        let diff = p5.Vector.sub(this.pos, other.pos);
+        diff.normalize();
+        diff.div(d);
+        steer.add(diff);
+        count++;
+      }
+    }
+    if (count > 0) steer.div(count);
+    if (steer.mag() > 0) {
+      steer.setMag(this.maxSpeed);
+      steer.sub(this.vel);
+      steer.limit(this.maxForce);
+    }
+    return steer;
+  }
+
+  align(robots) {
+    let neighborDist = 60;
+    let sum = createVector();
+    let count = 0;
+    for (let other of robots) {
+      let d = p5.Vector.dist(this.pos, other.pos);
+      if (d > 0 && d < neighborDist) {
+        sum.add(other.vel);
+        count++;
+      }
+    }
+    if (count > 0) {
+      sum.div(count);
+      sum.setMag(this.maxSpeed);
+      let steer = p5.Vector.sub(sum, this.vel);
+      steer.limit(this.maxForce);
+      return steer;
+    }
+    return createVector();
+  }
+
+  cohesion(robots) {
+    let neighborDist = 60;
+    let sum = createVector();
+    let count = 0;
+    for (let other of robots) {
+      let d = p5.Vector.dist(this.pos, other.pos);
+      if (d > 0 && d < neighborDist) {
+        sum.add(other.pos);
+        count++;
+      }
+    }
+    if (count > 0) {
+      sum.div(count);
+      return this.seek(sum);
+    }
+    return createVector();
+  }
+
+  seek(target) {
+    let desired = p5.Vector.sub(target, this.pos);
+    desired.setMag(this.maxSpeed);
+    let steer = p5.Vector.sub(desired, this.vel);
+    steer.limit(this.maxForce);
+    return steer;
+  }
+}
