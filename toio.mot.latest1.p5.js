@@ -7,7 +7,7 @@ const sketch = (p) => {
   const NUM = 30;
 
   // ---- ロボット寸法（短辺=進行方向）----
-  const ROBOT_W = 30, ROBOT_H = 70;
+  const ROBOT_W = 70, ROBOT_H = 30;
   const HALF_A = ROBOT_W * 0.5;     // 進行方向 半幅
   const HALF_B = ROBOT_H * 0.5;     // 横方向 半幅
 
