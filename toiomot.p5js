@@ -1,174 +1,226 @@
-// --- シミュレーション設定 ---
+// === Toio群シミュレーション: 進行方向を90°回転 ===
+
+const GRID_W = 1200;
+const GRID_H = 1200;
+const ROBOT_W = 30;
+const ROBOT_H = 70;
+const ROBOT_SPEED = 1.0;
+const SAFE_RADIUS = 80;
+const NEIGHBOR_DIST = 100;
+const FOOT_W = 210;
+const FOOT_H = 80;
+
 let robots = [];
-let numRobots = 20;
-let obstacles = [];
+let groups = [];
+let feet = [];
 
 function setup() {
-  createCanvas(400, 400);
-  for (let i = 0; i < numRobots; i++) {
-    robots.push(new Toio(random(width), random(height)));
+  createCanvas(GRID_W, GRID_H);
+  rectMode(CENTER);
+  noStroke();
+
+  // 初期配置（安全距離確保）
+  let attempts = 0;
+  while (robots.length < 60 && attempts < 5000) {
+    let x = random(200, width - 200);
+    let y = random(200, height - 200);
+    let ok = true;
+    for (let r of robots) {
+      if (dist(x, y, r.pos.x, r.pos.y) < SAFE_RADIUS * 1.5) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) robots.push(new Robot(x, y, -HALF_PI)); // 上向き
+    attempts++;
   }
-  // ランダムに障害物配置
-  for (let i = 0; i < 5; i++) {
-    obstacles.push(createVector(random(50, 350), random(50, 350)));
-  }
+
+  groups = [{ id: 0, color: color(70, 130, 255), members: robots }];
+
+  // 足（障害物）
+  feet.push(new Foot(1000, 1000, createVector(-0.8, -0.7)));
 }
 
 function draw() {
   background(240);
 
-  // ポテンシャル場（人間位置）
-  let human = createVector(mouseX, mouseY);
-  fill(255, 100, 100, 100);
-  noStroke();
-  ellipse(human.x, human.y, 50, 50);
-
-  // 障害物描画
-  fill(80);
-  for (let obs of obstacles) {
-    ellipse(obs.x, obs.y, 30, 30);
+  // 足を動かす
+  for (let f of feet) {
+    f.move();
+    f.display();
   }
 
-  // ロボット更新
-  for (let r of robots) {
-    r.applyPotential(human, obstacles, robots);
-    r.update();
-    r.display();
+  // 群更新
+  updateGroups();
+
+  // 各群の動作
+  for (let g of groups) {
+    g.direction = computeGroupDirection(g);
+    for (let r of g.members) {
+      r.update(g.direction, feet, robots);
+      r.display(g.color);
+    }
   }
 }
 
-// --- Toio クラス ---
-class Toio {
-  constructor(x, y) {
+// ------------------------------------
+// ロボットクラス
+class Robot {
+  constructor(x, y, angle) {
     this.pos = createVector(x, y);
-    this.vel = p5.Vector.random2D().mult(2);
-    this.acc = createVector();
-    this.maxSpeed = 2;
-    this.maxForce = 0.1;
-    this.size = 30;
+    this.angle = angle;
   }
 
-  applyPotential(human, obstacles, robots) {
-    let force = createVector();
+  update(groupDir, feet, allRobots) {
+    // === 群方向に合わせて角度をスムーズに変化 ===
+    let targetAngle = atan2(groupDir.y, groupDir.x);
+    this.angle = lerpAngle(this.angle, targetAngle, 0.05);
 
-    // 人間から離れる力（ポテンシャル場：反発）
-    let humanVec = p5.Vector.sub(this.pos, human);
-    let distH = humanVec.mag();
-    if (distH < 100) {
-      humanVec.setMag(map(distH, 0, 100, 1, 0));
-      force.add(humanVec);
-    }
+    // === 進行方向を90°回転（右に） ===
+    //   ※左にしたい場合は -PI/2 に変更
+    let heading = p5.Vector.fromAngle(this.angle + HALF_PI).setMag(ROBOT_SPEED);
 
-    // 障害物回避
-    for (let obs of obstacles) {
-      let diff = p5.Vector.sub(this.pos, obs);
-      let d = diff.mag();
-      if (d < 50) {
-        diff.setMag(map(d, 0, 50, 1, 0));
-        force.add(diff);
+    // === 他トイオとの距離保持 ===
+    let repel = createVector(0, 0);
+    for (let other of allRobots) {
+      if (other === this) continue;
+      let d = p5.Vector.dist(this.pos, other.pos);
+      if (d < SAFE_RADIUS && d > 0) {
+        let diff = p5.Vector.sub(this.pos, other.pos);
+        diff.normalize();
+        diff.mult((SAFE_RADIUS - d) * 0.03);
+        repel.add(diff);
       }
     }
 
-    // 群行動（分離・整列・結合）
-    let sep = this.separate(robots).mult(1.5);
-    let ali = this.align(robots).mult(1.0);
-    let coh = this.cohesion(robots).mult(0.8);
-    force.add(sep);
-    force.add(ali);
-    force.add(coh);
+    // === 足（障害物）回避 ===
+    for (let f of feet) {
+      if (
+        abs(this.pos.x - f.pos.x) < FOOT_W / 2 + ROBOT_W &&
+        abs(this.pos.y - f.pos.y) < FOOT_H / 2 + ROBOT_H
+      ) {
+        let diff = p5.Vector.sub(this.pos, f.pos);
+        diff.normalize();
+        repel.add(diff.mult(1.5));
+      }
+    }
 
-    // 最終加速度
-    this.acc.add(force.limit(this.maxForce));
+    // === 位置更新 ===
+    this.pos.add(p5.Vector.add(heading, repel));
+
+    // 壁反射
+    if (this.pos.x < SAFE_RADIUS || this.pos.x > width - SAFE_RADIUS)
+      this.angle = PI - this.angle;
+    if (this.pos.y < SAFE_RADIUS || this.pos.y > height - SAFE_RADIUS)
+      this.angle = -this.angle;
   }
 
-  update() {
-    this.vel.add(this.acc);
-    this.vel.limit(this.maxSpeed);
-    this.pos.add(this.vel);
-    this.acc.mult(0);
+  display(col) {
+    push();
+    translate(this.pos.x, this.pos.y);
+    rotate(this.angle); // 表示向きは元のまま
+    fill(col);
+    rect(0, 0, ROBOT_W, ROBOT_H, 5);
+    fill(255, 255, 180);
+    rect(ROBOT_W / 2 - 3, 0, 6, ROBOT_H * 0.3, 2);
+    pop();
+  }
+}
 
-    // 壁バウンス
+// ------------------------------------
+// 足クラス
+class Foot {
+  constructor(x, y, dir) {
+    this.pos = createVector(x, y);
+    this.vel = dir.copy().setMag(1.0);
+  }
+
+  move() {
+    this.pos.add(this.vel);
     if (this.pos.x < 0 || this.pos.x > width) this.vel.x *= -1;
     if (this.pos.y < 0 || this.pos.y > height) this.vel.y *= -1;
   }
 
   display() {
-    push();
-    translate(this.pos.x, this.pos.y);
-    rotate(this.vel.heading());
-    fill(100, 150, 255);
-    rectMode(CENTER);
-    rect(0, 0, this.size, this.size, 5);
-    pop();
+    fill(255, 100, 100, 100);
+    rect(this.pos.x, this.pos.y, FOOT_W, FOOT_H);
   }
+}
 
-  separate(robots) {
-    let desiredSeparation = this.size * 1.5;
-    let steer = createVector();
-    let count = 0;
-    for (let other of robots) {
-      let d = p5.Vector.dist(this.pos, other.pos);
-      if (d > 0 && d < desiredSeparation) {
-        let diff = p5.Vector.sub(this.pos, other.pos);
-        diff.normalize();
-        diff.div(d);
-        steer.add(diff);
-        count++;
+// ------------------------------------
+// 群の平均方向
+function computeGroupDirection(group) {
+  let avg = createVector(0, 0);
+  for (let r of group.members) avg.add(p5.Vector.fromAngle(r.angle));
+  avg.div(group.members.length);
+  return avg.setMag(ROBOT_SPEED);
+}
+
+// ------------------------------------
+// 群の分断・再結合
+function updateGroups() {
+  let unvisited = [...robots];
+  let newGroups = [];
+  let nextID = 0;
+
+  while (unvisited.length > 0) {
+    let cluster = [];
+    let stack = [unvisited.pop()];
+    while (stack.length > 0) {
+      let current = stack.pop();
+      cluster.push(current);
+      for (let i = unvisited.length - 1; i >= 0; i--) {
+        let other = unvisited[i];
+        if (p5.Vector.dist(current.pos, other.pos) < NEIGHBOR_DIST) {
+          stack.push(other);
+          unvisited.splice(i, 1);
+        }
       }
     }
-    if (count > 0) steer.div(count);
-    if (steer.mag() > 0) {
-      steer.setMag(this.maxSpeed);
-      steer.sub(this.vel);
-      steer.limit(this.maxForce);
-    }
-    return steer;
+    newGroups.push({
+      id: nextID++,
+      members: cluster,
+      color: color(70, 130, 255),
+    });
   }
 
-  align(robots) {
-    let neighborDist = 60;
-    let sum = createVector();
-    let count = 0;
-    for (let other of robots) {
-      let d = p5.Vector.dist(this.pos, other.pos);
-      if (d > 0 && d < neighborDist) {
-        sum.add(other.vel);
-        count++;
+  // 群再結合（人数優先）
+  for (let i = 0; i < newGroups.length; i++) {
+    for (let j = i + 1; j < newGroups.length; j++) {
+      let g1 = newGroups[i];
+      let g2 = newGroups[j];
+      let d = dist(
+        averagePos(g1.members).x,
+        averagePos(g1.members).y,
+        averagePos(g2.members).x,
+        averagePos(g2.members).y
+      );
+      if (d < NEIGHBOR_DIST * 2) {
+        if (g1.members.length > g2.members.length) {
+          g1.members = g1.members.concat(g2.members);
+          newGroups.splice(j, 1);
+          j--;
+        } else if (g1.members.length < g2.members.length) {
+          g2.members = g2.members.concat(g1.members);
+          newGroups.splice(i, 1);
+          i--;
+          break;
+        }
       }
     }
-    if (count > 0) {
-      sum.div(count);
-      sum.setMag(this.maxSpeed);
-      let steer = p5.Vector.sub(sum, this.vel);
-      steer.limit(this.maxForce);
-      return steer;
-    }
-    return createVector();
   }
 
-  cohesion(robots) {
-    let neighborDist = 60;
-    let sum = createVector();
-    let count = 0;
-    for (let other of robots) {
-      let d = p5.Vector.dist(this.pos, other.pos);
-      if (d > 0 && d < neighborDist) {
-        sum.add(other.pos);
-        count++;
-      }
-    }
-    if (count > 0) {
-      sum.div(count);
-      return this.seek(sum);
-    }
-    return createVector();
-  }
+  groups = newGroups;
+}
 
-  seek(target) {
-    let desired = p5.Vector.sub(target, this.pos);
-    desired.setMag(this.maxSpeed);
-    let steer = p5.Vector.sub(desired, this.vel);
-    steer.limit(this.maxForce);
-    return steer;
-  }
+function averagePos(list) {
+  let sum = createVector(0, 0);
+  for (let r of list) sum.add(r.pos);
+  sum.div(list.length);
+  return sum;
+}
+
+function lerpAngle(a, b, t) {
+  let diff = (b - a + PI) % (TWO_PI) - PI;
+  return a + diff * t;
 }
